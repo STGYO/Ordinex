@@ -1,4 +1,4 @@
-# FileSorter AI (Tauri + React + Rust)
+# Ordinex
 
 Desktop app to scan a folder, classify files (AI-first + rules fallback), preview moves, execute moves, and rollback with history.
 
