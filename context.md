@@ -60,6 +60,9 @@ Total scoped files: 111
 - Rule engine and file move transaction logic live in src-tauri/src/rules.rs and src-tauri/src/engine.rs.
 - AI classification supports multiple providers (Gemini, OpenAI, Anthropic, Ollama, OpenRouter-compatible) with provider-specific credentials stored in OS credential vault.
 - Scan flow supports configurable strategy: complete AI sorting (no rule fallback), AI-first with rules fallback, or rules-first with AI fallback, then Unknown fallback for unmatched files.
+- Complete AI sorting now uses a semantic planner that reads lightweight file metadata (timestamps, parent folder, extension, size) and capped content snippets for supported text/code files.
+- AI planner output is normalized into fixed top-level categories with semantic subfolders, confidence scores, and reason metadata to keep related files grouped together.
+- Dashboard execution now requires explicit plan approval before running file moves, and low-confidence AI placements are surfaced for review.
 - History persists to SQLite via src-tauri/src/db.rs; logs via src-tauri/src/observability.rs.
 - Theme system is tokenized with explicit light/dark palettes and persisted user selection.
 - Updater uses GitHub Releases `latest.json` endpoint with signed artifacts and Tauri updater capabilities, with `plugins.updater.pubkey` configured in Tauri config for runtime initialization.

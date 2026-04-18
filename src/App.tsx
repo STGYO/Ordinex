@@ -32,8 +32,16 @@ type FileNode = {
   is_dir: boolean;
   size: number;
   extension: string | null;
+  parent_folder?: string | null;
+  modified_unix_ms?: number | null;
+  created_unix_ms?: number | null;
+  content_snippet?: string | null;
   category?: string;
   suggested_folder?: string;
+  ai_confidence?: number | null;
+  ai_reason?: string | null;
+  ai_top_level_category?: string | null;
+  ai_semantic_subfolder?: string | null;
 };
 
 type MoveOperation = {
@@ -220,6 +228,7 @@ export default function App() {
   const [aiModels, setAIModels] = useState<string[]>([]);
   const [aiAvailable, setAIAvailable] = useState(false);
   const [aiStatusMessage, setAIStatusMessage] = useState("AI provider is not validated.");
+  const [planApproved, setPlanApproved] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light"
   );
@@ -392,6 +401,7 @@ export default function App() {
 
   const loadDirectory = async (path: string) => {
     setScanning(true);
+    setPlanApproved(false);
     setErrorMessage(null);
     try {
       const options: ScanOptions = {
@@ -409,7 +419,7 @@ export default function App() {
           : "rules-first with AI fallback";
       setFiles(result.files);
       setStatusMessage(
-        `Scan complete: ${result.metrics.files_seen} files, ${result.metrics.files_classified_by_ai} AI, ${result.metrics.files_classified_by_rules} rules (${strategyLabel}).`
+        `Scan complete: ${result.metrics.files_seen} files, ${result.metrics.files_classified_by_ai} AI, ${result.metrics.files_classified_by_rules} rules (${strategyLabel}). Review and approve the plan before executing moves.`
       );
     } catch (e) {
       console.error(e);
@@ -758,6 +768,10 @@ export default function App() {
 
   const handleExecuteMoves = async () => {
     if (!selectedPath || files.length === 0) return;
+    if (!planApproved) {
+      setErrorMessage("Approve the current action plan before executing moves.");
+      return;
+    }
     setExecuting(true);
     setErrorMessage(null);
     try {
@@ -766,6 +780,7 @@ export default function App() {
       const skippedCount = manifest.moves.filter((m) => m.status === "duplicate_skipped").length;
       const failedCount = manifest.moves.filter((m) => m.status === "failed").length;
       setStatusMessage(`Move complete: ${successCount} moved, ${skippedCount} duplicates skipped, ${failedCount} failed.`);
+      setPlanApproved(false);
       // Reload directory post-move to update view
       await loadDirectory(selectedPath);
     } catch (e) {
@@ -801,6 +816,9 @@ export default function App() {
 
   const aiClassifiedCount = files.filter(f => !f.is_dir && f.category && f.category !== "Unknown").length;
   const safeToMoveCount = files.filter(f => !f.is_dir && f.suggested_folder).length;
+  const lowConfidenceCount = files.filter(
+    (f) => !f.is_dir && typeof f.ai_confidence === "number" && f.ai_confidence < 0.55
+  ).length;
   const totalFiles = files.filter(f => !f.is_dir).length;
   const updateProgressPercent =
     updateStatus.totalBytes && updateStatus.totalBytes > 0
@@ -918,10 +936,29 @@ export default function App() {
                 Choose Target Folder
               </Button>
               {currentView === "dashboard" ? (
-                <Button size="sm" className="gap-2" disabled={!selectedPath || files.length === 0 || executing} onClick={handleExecuteMoves}>
-                  <Play size={16} />
-                  {executing ? "Organizing..." : "Execute Full Move"}
-                </Button>
+                <>
+                  <Button
+                    variant={planApproved ? "secondary" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      setPlanApproved(true);
+                      setErrorMessage(null);
+                      setStatusMessage("Action plan approved. You can execute moves now.");
+                    }}
+                    disabled={!selectedPath || files.length === 0 || scanning || executing}
+                  >
+                    {planApproved ? "Plan Approved" : "Approve Plan"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-2"
+                    disabled={!selectedPath || files.length === 0 || executing || !planApproved}
+                    onClick={handleExecuteMoves}
+                  >
+                    <Play size={16} />
+                    {executing ? "Organizing..." : "Execute Full Move"}
+                  </Button>
+                </>
               ) : (
                 <>
                   <Button variant="outline" size="sm" disabled={rulesLoading} onClick={loadRuleConfig}>
@@ -1487,6 +1524,11 @@ export default function App() {
                     </CardHeader>
                     <CardContent>
                       <div className="text-2xl font-bold text-green-500">{scanning ? "..." : safeToMoveCount}</div>
+                      {!scanning && lowConfidenceCount > 0 && (
+                        <p className="text-xs text-warning-muted-foreground mt-1">
+                          {lowConfidenceCount} low-confidence items will be routed for review.
+                        </p>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
@@ -1545,6 +1587,9 @@ export default function App() {
                                   <span className="truncate flex-1 font-mono">{f.name}</span>
                                   <span className="shrink-0 w-24 text-right">{(f.size / 1024).toFixed(1)} KB</span>
                                   <span className="shrink-0 w-24 text-right text-primary/80">{f.category || "Unknown"}</span>
+                                  <span className="shrink-0 w-20 text-right" title={f.ai_reason || undefined}>
+                                    {typeof f.ai_confidence === "number" ? `${Math.round(f.ai_confidence * 100)}%` : "-"}
+                                  </span>
                                 </div>
                               ))}
                             </div>

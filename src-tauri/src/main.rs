@@ -13,7 +13,10 @@ use log::{error, info, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -23,11 +26,19 @@ pub struct FileNode {
     pub is_dir: bool,
     pub size: u64,
     pub extension: Option<String>,
+    pub parent_folder: Option<String>,
+    pub modified_unix_ms: Option<u64>,
+    pub created_unix_ms: Option<u64>,
+    pub content_snippet: Option<String>,
     pub category: Option<String>,
     pub suggested_folder: Option<String>,
     pub matched_rule_id: Option<String>,
     pub matched_rule_name: Option<String>,
     pub planned_action: Option<String>,
+    pub ai_confidence: Option<f32>,
+    pub ai_reason: Option<String>,
+    pub ai_top_level_category: Option<String>,
+    pub ai_semantic_subfolder: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -49,6 +60,8 @@ pub struct ScanMetrics {
     pub files_classified_by_rules: usize,
     pub files_classified_by_ai: usize,
     pub files_unknown: usize,
+    pub files_with_content_snippet: usize,
+    pub files_metadata_fallback: usize,
     pub elapsed_ms: u128,
     pub throughput_files_per_sec: f64,
 }
@@ -72,23 +85,195 @@ fn should_skip_entry(name: &str, include_hidden: bool, exclude_patterns: &[Strin
         .any(|pattern| !pattern.trim().is_empty() && lower.contains(&pattern))
 }
 
+const TOP_LEVEL_CATEGORIES: [&str; 8] = [
+    "Work",
+    "Personal",
+    "Finance",
+    "Media",
+    "Code",
+    "Academic",
+    "Projects",
+    "Unknown",
+];
+
+const AI_LOW_CONFIDENCE_THRESHOLD: f32 = 0.55;
+const CONTENT_SNIPPET_MAX_BYTES: usize = 4096;
+const CONTENT_SNIPPET_MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+
+fn to_unix_ms(value: std::io::Result<SystemTime>) -> Option<u64> {
+    value
+        .ok()
+        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn extract_parent_folder(path: &Path) -> Option<String> {
+    path.parent()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().to_string())
+}
+
+fn should_extract_text_snippet(extension: Option<&str>) -> bool {
+    let ext = extension.unwrap_or_default().to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "txt"
+            | "md"
+            | "csv"
+            | "json"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "log"
+            | "rs"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "java"
+            | "kt"
+            | "go"
+            | "c"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "cs"
+            | "swift"
+            | "rb"
+            | "php"
+            | "sh"
+            | "ps1"
+    )
+}
+
+fn extract_light_content_snippet(path: &Path, extension: Option<&str>, size: u64) -> Option<String> {
+    if size == 0 || size > CONTENT_SNIPPET_MAX_FILE_SIZE || !should_extract_text_snippet(extension) {
+        return None;
+    }
+
+    let mut file = File::open(path).ok()?;
+    let mut buffer = vec![0u8; CONTENT_SNIPPET_MAX_BYTES];
+    let bytes_read = file.read(&mut buffer).ok()?;
+    if bytes_read == 0 {
+        return None;
+    }
+
+    buffer.truncate(bytes_read);
+    if buffer.contains(&0) {
+        return None;
+    }
+
+    let snippet = String::from_utf8_lossy(&buffer);
+    let compact = snippet
+        .split_whitespace()
+        .take(200)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.is_empty() {
+        None
+    } else {
+        Some(compact)
+    }
+}
+
+fn normalize_top_level_category(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "Unknown".to_string();
+    }
+
+    for category in TOP_LEVEL_CATEGORIES {
+        if category.eq_ignore_ascii_case(trimmed) {
+            return category.to_string();
+        }
+    }
+
+    "Unknown".to_string()
+}
+
+fn sanitize_folder_segment(value: &str, fallback: &str) -> String {
+    let filtered = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+
+    let collapsed = filtered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+
+    if collapsed.is_empty() {
+        fallback.to_string()
+    } else {
+        collapsed
+    }
+}
+
+fn semantic_subfolder_for_result(result: &AIClassificationResult) -> String {
+    if result.confidence < AI_LOW_CONFIDENCE_THRESHOLD {
+        return "Needs Review".to_string();
+    }
+
+    let raw = result
+        .semantic_subfolder
+        .as_deref()
+        .or_else(|| {
+            if result.suggested_folder_name.trim().is_empty() {
+                None
+            } else {
+                Some(result.suggested_folder_name.as_str())
+            }
+        })
+        .unwrap_or("General");
+
+    sanitize_folder_segment(raw, "General")
+}
+
 fn apply_ai_results(files: &mut [FileNode], ai_results: Vec<AIClassificationResult>) -> usize {
-    let mapping: HashMap<String, AIClassificationResult> = ai_results
-        .into_iter()
-        .map(|res| (res.filename.to_ascii_lowercase(), res))
-        .collect();
+    let mut mapping: HashMap<String, Vec<AIClassificationResult>> = HashMap::new();
+    for res in ai_results {
+        mapping
+            .entry(res.filename.to_ascii_lowercase())
+            .or_default()
+            .push(res);
+    }
     let mut count = 0usize;
 
     for file in files.iter_mut() {
         if file.is_dir || file.category.is_some() {
             continue;
         }
-        if let Some(ai_decision) = mapping.get(&file.name.to_ascii_lowercase()) {
-            file.category = Some(ai_decision.category.clone());
-            file.suggested_folder = Some(ai_decision.suggested_folder_name.clone());
+        if let Some(decisions) = mapping.get_mut(&file.name.to_ascii_lowercase()) {
+            let Some(ai_decision) = decisions.pop() else {
+                continue;
+            };
+            let top_category = normalize_top_level_category(
+                ai_decision
+                    .top_level_category
+                    .as_deref()
+                    .unwrap_or(ai_decision.category.as_str()),
+            );
+            let semantic_subfolder = semantic_subfolder_for_result(&ai_decision);
+
+            file.category = Some(top_category.clone());
+            file.suggested_folder = Some(format!("{}/{}", top_category, semantic_subfolder));
             file.matched_rule_id = Some("ai-generated".to_string());
-            file.matched_rule_name = Some("AI Classification".to_string());
+            file.matched_rule_name = Some("AI Semantic Planner".to_string());
             file.planned_action = Some("move".to_string());
+            file.ai_confidence = Some(ai_decision.confidence);
+            file.ai_reason = ai_decision.reason;
+            file.ai_top_level_category = Some(top_category);
+            file.ai_semantic_subfolder = Some(semantic_subfolder);
             count += 1;
         }
     }
@@ -233,17 +418,33 @@ async fn scan_internal(
 
             let metadata = entry.metadata().ok()?;
             let extension = entry.path().extension().map(|e| e.to_string_lossy().to_string());
+            let parent_folder = extract_parent_folder(entry.path());
+            let modified_unix_ms = to_unix_ms(metadata.modified());
+            let created_unix_ms = to_unix_ms(metadata.created());
+            let content_snippet = if metadata.is_file() {
+                extract_light_content_snippet(entry.path(), extension.as_deref(), metadata.len())
+            } else {
+                None
+            };
             let node = FileNode {
                 name: entry.file_name().to_string_lossy().to_string(),
                 path: entry.path().to_string_lossy().to_string(),
                 is_dir: metadata.is_dir(),
                 size: metadata.len(),
                 extension,
+                parent_folder,
+                modified_unix_ms,
+                created_unix_ms,
+                content_snippet,
                 category: None,
                 suggested_folder: None,
                 matched_rule_id: None,
                 matched_rule_name: None,
                 planned_action: None,
+                ai_confidence: None,
+                ai_reason: None,
+                ai_top_level_category: None,
+                ai_semantic_subfolder: None,
             };
             Some(node)
         })
@@ -310,6 +511,12 @@ async fn scan_internal(
         })
         .count();
 
+    let files_with_content_snippet = files
+        .iter()
+        .filter(|f| !f.is_dir && f.content_snippet.is_some())
+        .count();
+    let files_metadata_fallback = files_seen.saturating_sub(files_with_content_snippet);
+
     files.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
@@ -329,6 +536,8 @@ async fn scan_internal(
         files_classified_by_rules,
         files_classified_by_ai,
         files_unknown,
+        files_with_content_snippet,
+        files_metadata_fallback,
         elapsed_ms,
         throughput_files_per_sec,
     };

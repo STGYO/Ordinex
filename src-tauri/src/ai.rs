@@ -4,7 +4,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -108,13 +108,33 @@ pub struct ProviderValidationResult {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AIClassificationResult {
     pub filename: String,
+    #[serde(default = "default_category")]
     pub category: String,
-    #[serde(alias = "suggested_folder", alias = "folder", alias = "suggestedFolderName")]
+    #[serde(
+        default = "default_suggested_folder",
+        alias = "suggested_folder",
+        alias = "folder",
+        alias = "suggestedFolderName"
+    )]
     pub suggested_folder_name: String,
     #[serde(default = "default_confidence")]
     pub confidence: f32,
     #[serde(default)]
     pub is_temporary_or_cleanup: bool,
+    #[serde(default, alias = "topLevelCategory")]
+    pub top_level_category: Option<String>,
+    #[serde(default, alias = "semanticSubfolder", alias = "subfolder")]
+    pub semantic_subfolder: Option<String>,
+    #[serde(default, alias = "rationale")]
+    pub reason: Option<String>,
+}
+
+fn default_category() -> String {
+    "Unknown".to_string()
+}
+
+fn default_suggested_folder() -> String {
+    "General".to_string()
 }
 
 fn default_confidence() -> f32 {
@@ -416,6 +436,30 @@ fn build_file_payload(unclassified_files: &[FileNode]) -> Value {
         if let Some(ext) = &f.extension {
             obj.insert("ext".to_string(), serde_json::Value::String(ext.clone()));
         }
+        if let Some(parent) = &f.parent_folder {
+            obj.insert(
+                "parent_folder".to_string(),
+                serde_json::Value::String(parent.clone()),
+            );
+        }
+        if let Some(modified) = f.modified_unix_ms {
+            obj.insert(
+                "modified_unix_ms".to_string(),
+                serde_json::Value::Number(modified.into()),
+            );
+        }
+        if let Some(created) = f.created_unix_ms {
+            obj.insert(
+                "created_unix_ms".to_string(),
+                serde_json::Value::Number(created.into()),
+            );
+        }
+        if let Some(snippet) = &f.content_snippet {
+            obj.insert(
+                "content_snippet".to_string(),
+                serde_json::Value::String(snippet.clone()),
+            );
+        }
         files_json
             .as_array_mut()
             .expect("files_json initialized as array")
@@ -430,22 +474,115 @@ fn classification_prompt(unclassified_files: &[FileNode], existing_folders: &[St
         String::new()
     } else {
         format!(
-            "\nYou have previously created these folders: {:?}. Reuse one if it semantically fits; otherwise create a concise, specific folder name.",
+            "\nExisting folders to reuse when appropriate: {:?}.",
             existing_folders
         )
     };
 
-    let prompt = format!("Classify these files:\n{}{}", files_json, context_str);
-    let sys_prompt = "You are a specialized file classification engine for Windows.
-Return ONLY a strict JSON array of objects, one per input file, with keys:
+    let prompt = format!(
+        "Plan semantic file organization for this batch. Group related files together by meaning and metadata while preserving fixed top-level categories.\nInput files:\n{}{}",
+        files_json, context_str
+    );
+    let sys_prompt = "You are a specialized Windows file organization planner.
+Use fixed top-level categories only: Work, Personal, Finance, Media, Code, Academic, Projects, Unknown.
+Group related files into concise semantic subfolders (for example invoices, receipts, meeting notes, react components, semester notes).
+Return ONLY a strict JSON array with one object per input file and keys:
 - filename (exact match to input name)
-- category (Work, Personal, Finance, Media, Code, Academic, Projects, Unknown)
-- suggested_folder_name
+- top_level_category (must be one of Work, Personal, Finance, Media, Code, Academic, Projects, Unknown)
+- semantic_subfolder
+- category (same as top_level_category)
+- suggested_folder_name (same as semantic_subfolder for compatibility)
 - confidence (0.0 to 1.0)
+- reason (short explanation)
 - is_temporary_or_cleanup (boolean)
 Do not include markdown fences or any extra text.";
 
     (prompt, sys_prompt.to_string())
+}
+
+fn canonical_subfolder_key(name: &str) -> String {
+    let mut key = name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if key.ends_with('s') {
+        key.pop();
+    }
+    if key.is_empty() {
+        "general".to_string()
+    } else {
+        key
+    }
+}
+
+fn normalize_folder_label(name: &str) -> String {
+    let cleaned = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    let compact = cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if compact.is_empty() {
+        "General".to_string()
+    } else {
+        compact
+    }
+}
+
+fn normalize_top_level(raw: &str) -> String {
+    for value in [
+        "Work", "Personal", "Finance", "Media", "Code", "Academic", "Projects", "Unknown",
+    ] {
+        if value.eq_ignore_ascii_case(raw.trim()) {
+            return value.to_string();
+        }
+    }
+    "Unknown".to_string()
+}
+
+fn normalize_classification_results(
+    mut results: Vec<AIClassificationResult>,
+) -> Vec<AIClassificationResult> {
+    let mut canonical_by_group: HashMap<(String, String), String> = HashMap::new();
+
+    for result in &mut results {
+        let top = normalize_top_level(
+            result
+                .top_level_category
+                .as_deref()
+                .unwrap_or(result.category.as_str()),
+        );
+        let sub = normalize_folder_label(
+            result
+                .semantic_subfolder
+                .as_deref()
+                .unwrap_or(result.suggested_folder_name.as_str()),
+        );
+        let key = canonical_subfolder_key(&sub);
+        let stable_sub = canonical_by_group
+            .entry((top.clone(), key))
+            .or_insert_with(|| sub.clone())
+            .clone();
+
+        result.top_level_category = Some(top.clone());
+        result.category = top;
+        result.semantic_subfolder = Some(stable_sub.clone());
+        result.suggested_folder_name = stable_sub;
+        result.confidence = result.confidence.clamp(0.0, 1.0);
+    }
+
+    results
 }
 
 fn sanitize_model_for_gemini(model: &str) -> String {
@@ -787,7 +924,8 @@ pub async fn classify_files_with_ai(
     };
 
     let parsed = parse_classification_json(&raw)?;
-    Ok(filter_results_to_input(files, parsed))
+    let filtered = filter_results_to_input(files, parsed);
+    Ok(normalize_classification_results(filtered))
 }
 
 async fn list_gemini_models(api_key: Option<String>, base_url: String) -> Result<Vec<String>, String> {
