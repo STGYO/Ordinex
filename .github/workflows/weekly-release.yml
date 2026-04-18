@@ -21,7 +21,7 @@ jobs:
       tag: ${{ steps.bump.outputs.tag }}
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -31,9 +31,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Bump patch version across manifests
         id: bump
@@ -133,14 +133,14 @@ jobs:
         platform: [windows-latest, macos-latest, ubuntu-22.04]
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare-release.outputs.tag }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Rust toolchain
@@ -169,6 +169,7 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         with:
           tagName: ${{ needs.prepare-release.outputs.tag }}
+          releaseName: ${{ needs.prepare-release.outputs.tag }}
           generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
