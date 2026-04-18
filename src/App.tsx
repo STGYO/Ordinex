@@ -90,6 +90,8 @@ type AIProvider = "gemini" | "openai" | "anthropic" | "ollama" | "openrouter";
 type AISettings = {
   version: number;
   enabled: boolean;
+  ai_first_with_fallback: boolean;
+  complete_ai_sorting: boolean;
   selected_provider: AIProvider;
   selected_model: string;
   custom_base_url?: string | null;
@@ -118,6 +120,8 @@ type ProviderValidationResult = {
 
 type ScanOptions = {
   enable_ai?: boolean;
+  ai_first_with_fallback?: boolean;
+  complete_ai_sorting?: boolean;
 };
 
 type ScanMetrics = {
@@ -175,6 +179,8 @@ const providerNeedsBaseUrl = (provider: AIProvider) => provider === "ollama" || 
 const defaultAISettings = (): AISettings => ({
   version: 1,
   enabled: true,
+  ai_first_with_fallback: true,
+  complete_ai_sorting: false,
   selected_provider: "gemini",
   selected_model: DEFAULT_MODEL_BY_PROVIDER.gemini,
   custom_base_url: null,
@@ -390,11 +396,20 @@ export default function App() {
     try {
       const options: ScanOptions = {
         enable_ai: aiSettingsDraft.enabled,
+        ai_first_with_fallback: aiSettingsDraft.ai_first_with_fallback,
+        complete_ai_sorting: aiSettingsDraft.complete_ai_sorting,
       };
       const result = await invoke<ScanResponse>("scan_directory_advanced", { path, options });
+      const strategyLabel = !aiSettingsDraft.enabled
+        ? "rules only"
+        : aiSettingsDraft.complete_ai_sorting
+          ? "complete AI sorting (no rule fallback)"
+        : aiSettingsDraft.ai_first_with_fallback
+          ? "AI-first with rules fallback"
+          : "rules-first with AI fallback";
       setFiles(result.files);
       setStatusMessage(
-        `Scan complete: ${result.metrics.files_seen} files, ${result.metrics.files_classified_by_ai} AI-first, ${result.metrics.files_classified_by_rules} rules fallback.`
+        `Scan complete: ${result.metrics.files_seen} files, ${result.metrics.files_classified_by_ai} AI, ${result.metrics.files_classified_by_rules} rules (${strategyLabel}).`
       );
     } catch (e) {
       console.error(e);
@@ -945,8 +960,9 @@ export default function App() {
 
               <div className="space-y-2">
                 <Label htmlFor="ai-enabled">Enable AI sorting</Label>
-                <label id="ai-enabled" className="inline-flex items-center gap-2 text-sm">
+                <label className="inline-flex items-center gap-2 text-sm">
                   <input
+                    id="ai-enabled"
                     type="checkbox"
                     checked={aiSettingsDraft.enabled}
                     onChange={(e) =>
@@ -956,7 +972,45 @@ export default function App() {
                       }))
                     }
                   />
-                  AI-first sorting with normal sorting fallback
+                  Enable AI sorting
+                </label>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="ai-first-fallback">AI-first sorting with normal sorting fallback</Label>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    id="ai-first-fallback"
+                    type="checkbox"
+                    checked={aiSettingsDraft.ai_first_with_fallback}
+                    disabled={!aiSettingsDraft.enabled || aiSettingsDraft.complete_ai_sorting}
+                    onChange={(e) =>
+                      setAISettingsDraft((prev) => ({
+                        ...prev,
+                        ai_first_with_fallback: e.target.checked,
+                      }))
+                    }
+                  />
+                  Run AI before rules; if AI cannot classify a file, apply normal rule sorting
+                </label>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="ai-complete-sorting">Complete AI sorting</Label>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    id="ai-complete-sorting"
+                    type="checkbox"
+                    checked={aiSettingsDraft.complete_ai_sorting}
+                    disabled={!aiSettingsDraft.enabled}
+                    onChange={(e) =>
+                      setAISettingsDraft((prev) => ({
+                        ...prev,
+                        complete_ai_sorting: e.target.checked,
+                      }))
+                    }
+                  />
+                  Let AI decide folders and file placement with no rule fallback
                 </label>
               </div>
 

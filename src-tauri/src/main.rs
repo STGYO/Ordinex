@@ -37,6 +37,8 @@ pub struct ScanOptions {
     pub include_hidden: Option<bool>,
     pub exclude_patterns: Option<Vec<String>>,
     pub enable_ai: Option<bool>,
+    pub ai_first_with_fallback: Option<bool>,
+    pub complete_ai_sorting: Option<bool>,
     pub progress_log_every: Option<usize>,
 }
 
@@ -94,6 +96,64 @@ fn apply_ai_results(files: &mut [FileNode], ai_results: Vec<AIClassificationResu
     count
 }
 
+fn build_ai_folder_hints(
+    files: &[FileNode],
+    config: &rules::RuleConfig,
+    include_rule_hints: bool,
+) -> HashSet<String> {
+    let mut folder_hints: HashSet<String> = files
+        .iter()
+        .filter_map(|f| f.suggested_folder.clone())
+        .collect();
+    folder_hints.insert(config.unknown_folder.clone());
+    if include_rule_hints {
+        for rule in &config.rules {
+            if !rule.destination_folder.trim().is_empty() {
+                folder_hints.insert(rule.destination_folder.clone());
+            }
+        }
+    }
+    folder_hints
+}
+
+async fn classify_unresolved_with_ai(
+    files: &mut [FileNode],
+    config: &rules::RuleConfig,
+    ai_settings: &ai::AISettings,
+    include_rule_hints: bool,
+) -> usize {
+    let mut ai_candidates: Vec<FileNode> = files
+        .iter()
+        .filter(|f| !f.is_dir && f.category.is_none())
+        .cloned()
+        .collect();
+
+    if ai_candidates.is_empty() {
+        return 0;
+    }
+
+    let mut folder_hints = build_ai_folder_hints(files, config, include_rule_hints);
+    let mut files_classified_by_ai = 0usize;
+    let chunk_size = 50usize;
+
+    for chunk in ai_candidates.chunks_mut(chunk_size) {
+        let folder_vec: Vec<String> = folder_hints.iter().cloned().collect();
+        match ai::classify_files_with_ai(chunk, &folder_vec, ai_settings).await {
+            Ok(results) => {
+                for result in &results {
+                    folder_hints.insert(result.suggested_folder_name.clone());
+                }
+                files_classified_by_ai += apply_ai_results(files, results);
+            }
+            Err(err) => {
+                warn!("ai_classification_chunk_failed error='{}'", err);
+            }
+        }
+    }
+
+    files_classified_by_ai
+}
+
 async fn scan_internal(
     app: &tauri::AppHandle,
     path: &str,
@@ -107,6 +167,8 @@ async fn scan_internal(
         include_hidden: Some(false),
         exclude_patterns: Some(vec!["node_modules".to_string(), "target".to_string()]),
         enable_ai: Some(true),
+        ai_first_with_fallback: Some(true),
+        complete_ai_sorting: Some(false),
         progress_log_every: Some(5000),
     });
 
@@ -120,6 +182,12 @@ async fn scan_internal(
     let exclude_patterns = opts.exclude_patterns.unwrap_or_default();
     let ai_settings = ai::load_or_init_ai_settings(app)?;
     let enable_ai = opts.enable_ai.unwrap_or(true) && ai_settings.enabled;
+    let ai_first_with_fallback = opts
+        .ai_first_with_fallback
+        .unwrap_or(ai_settings.ai_first_with_fallback);
+    let complete_ai_sorting = opts
+        .complete_ai_sorting
+        .unwrap_or(ai_settings.complete_ai_sorting);
     let progress_every = opts.progress_log_every.unwrap_or(5000).max(1);
 
     let config = rules::load_or_init_rule_config(app)?;
@@ -133,12 +201,14 @@ async fn scan_internal(
     let engine = rules::RuleEngine::new(&config);
 
     info!(
-        "scan_started path='{}' recursive={} max_depth={} include_hidden={} enable_ai={}",
+        "scan_started path='{}' recursive={} max_depth={} include_hidden={} enable_ai={} ai_first_with_fallback={} complete_ai_sorting={}",
         path,
         recursive,
         max_depth,
         include_hidden,
-        enable_ai
+        enable_ai,
+        ai_first_with_fallback,
+        complete_ai_sorting
     );
 
     let entries: Vec<_> = WalkDir::new(path)
@@ -192,54 +262,29 @@ async fn scan_internal(
     }
 
     let mut files_classified_by_ai = 0usize;
-    if enable_ai {
-        let mut ai_candidates: Vec<FileNode> = files
-            .iter()
-            .filter(|f| !f.is_dir)
-            .cloned()
-            .collect();
+    if enable_ai && (ai_first_with_fallback || complete_ai_sorting) {
+        files_classified_by_ai +=
+            classify_unresolved_with_ai(&mut files, &config, &ai_settings, !complete_ai_sorting)
+                .await;
+    }
 
-        if !ai_candidates.is_empty() {
-            let mut folder_hints: HashSet<String> = files
-                .iter()
-                .filter_map(|f| f.suggested_folder.clone())
-                .collect();
-            folder_hints.insert(config.unknown_folder.clone());
-            for rule in &config.rules {
-                if !rule.destination_folder.trim().is_empty() {
-                    folder_hints.insert(rule.destination_folder.clone());
-                }
+    if !complete_ai_sorting || !enable_ai {
+        for file in files.iter_mut() {
+            if file.is_dir || file.category.is_some() {
+                continue;
             }
-
-            let chunk_size = 50usize;
-            for chunk in ai_candidates.chunks_mut(chunk_size) {
-                let folder_vec: Vec<String> = folder_hints.iter().cloned().collect();
-                match ai::classify_files_with_ai(chunk, &folder_vec, &ai_settings).await {
-                    Ok(results) => {
-                        for result in &results {
-                            folder_hints.insert(result.suggested_folder_name.clone());
-                        }
-                        files_classified_by_ai += apply_ai_results(&mut files, results);
-                    }
-                    Err(err) => {
-                        warn!("ai_classification_chunk_failed error='{}'", err);
-                    }
-                }
+            if let Some(rule_match) = engine.evaluate(&file.name, file.size) {
+                file.category = Some(rule_match.category_path.clone());
+                file.suggested_folder = Some(rule_match.destination_folder.clone());
+                file.matched_rule_id = Some(rule_match.rule_id.clone());
+                file.matched_rule_name = Some(rule_match.rule_name.clone());
+                file.planned_action = Some(format!("{:?}", rule_match.action).to_ascii_lowercase());
             }
         }
     }
 
-    for file in files.iter_mut() {
-        if file.is_dir || file.category.is_some() {
-            continue;
-        }
-        if let Some(rule_match) = engine.evaluate(&file.name, file.size) {
-            file.category = Some(rule_match.category_path.clone());
-            file.suggested_folder = Some(rule_match.destination_folder.clone());
-            file.matched_rule_id = Some(rule_match.rule_id.clone());
-            file.matched_rule_name = Some(rule_match.rule_name.clone());
-            file.planned_action = Some(format!("{:?}", rule_match.action).to_ascii_lowercase());
-        }
+    if enable_ai && !ai_first_with_fallback && !complete_ai_sorting {
+        files_classified_by_ai += classify_unresolved_with_ai(&mut files, &config, &ai_settings, true).await;
     }
 
     for file in files.iter_mut() {

@@ -35,6 +35,7 @@
   },
   "plugins": {
     "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2MEZCMjlBOEM1NEYzODMKUldTRDgxU01tcklQaHM2SWtFTzIrOVlYbkluY3dOQnYzUFlhOFljN0Z3a0VKR1BUcmZjdUQrei8K",
       "endpoints": [
         "https://github.com/STGYO/Ordinex/releases/latest/download/latest.json"
       ],

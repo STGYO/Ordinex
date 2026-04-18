@@ -61,6 +61,10 @@ pub struct AISettings {
     pub version: u32,
     #[serde(default = "default_ai_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_ai_first_with_fallback")]
+    pub ai_first_with_fallback: bool,
+    #[serde(default = "default_complete_ai_sorting")]
+    pub complete_ai_sorting: bool,
     #[serde(default)]
     pub selected_provider: AIProvider,
     #[serde(default)]
@@ -125,6 +129,14 @@ fn default_ai_enabled() -> bool {
     true
 }
 
+fn default_ai_first_with_fallback() -> bool {
+    true
+}
+
+fn default_complete_ai_sorting() -> bool {
+    false
+}
+
 fn default_model_for(provider: AIProvider) -> &'static str {
     match provider {
         AIProvider::Gemini => "gemini-2.5-flash",
@@ -155,6 +167,8 @@ pub fn default_ai_settings() -> AISettings {
     normalize_settings(AISettings {
         version: default_ai_settings_version(),
         enabled: default_ai_enabled(),
+        ai_first_with_fallback: default_ai_first_with_fallback(),
+        complete_ai_sorting: default_complete_ai_sorting(),
         selected_provider: AIProvider::Gemini,
         selected_model: default_model_for(AIProvider::Gemini).to_string(),
         custom_base_url: None,
