@@ -2,15 +2,29 @@ name: release-tauri
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v (for example 0.1.2)"
+        required: true
+        type: string
   push:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tauri-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish-tauri:
-    permissions:
-      contents: write
-    runs-on: windows-latest
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      max-parallel: 1
+      matrix:
+        platform: [windows-latest, macos-latest, ubuntu-22.04]
 
     steps:
       - name: Checkout
@@ -20,23 +34,36 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.platform, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Install frontend dependencies
         run: npm ci
 
       - name: Build and publish signed release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: "Ordinex v__VERSION__"
-          releaseBody: "Signed desktop release artifacts and updater metadata for Ordinex."
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', inputs.version) }}
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true

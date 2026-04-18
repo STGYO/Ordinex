@@ -1,144 +1,42 @@
 # Ordinex
 
-Desktop app to scan a folder, classify files (AI-first + rules fallback), preview moves, execute moves, and rollback with history.
+Ordinex is a desktop app that turns messy folders into organized spaces in minutes.
 
-## New Architecture Features
+## What Ordinex Does
 
-- External JSON rule engine stored in app data as `rules.json` (auto-created on first run)
-- Priority-based conflict resolution (`stop_on_match` / first-match-wins)
-- Compound extension support (for example `.tar.gz`)
-- Rule preview command (`preview_rule_matches`) for simulation of rule scope
-- Advanced scan command (`scan_directory_advanced`) with metrics + conflict reporting
-- Dry-run execution (`execute_moves` with optional `dry_run: true`) that logs simulated actions
-- Structured file action logging in app data log file (`filesorter.log`)
+- Scans folders and understands what each file is.
+- Suggests where files should go before any move happens.
+- Lets you review everything first, then organize in one action.
+- Keeps a history of actions so you can roll back if needed.
 
-## Rule Configuration
+## Why People Use It
 
-- Load config: Tauri command `get_rule_config`
-- Save config: Tauri command `save_rule_config_cmd`
-- Rule fields include:
-  - `id`, `name`, `enabled`, `priority`
-  - `category_path`, `destination_folder`, `action`
-  - `conditions.extensions`, `conditions.filename_keywords`, `conditions.min_size_bytes`, `conditions.max_size_bytes`
-- Toggle rules on/off using `enabled`.
-- Resolve overlaps by reordering `priority`.
+- Save time spent manually sorting downloads, screenshots, documents, and media.
+- Keep projects clean without creating fragile manual routines.
+- Reduce the risk of accidental file moves with preview and rollback.
 
-## Advanced Scan Options
+## Core Experience
 
-Use `scan_directory_advanced` with optional payload:
+1. Choose a folder.
+2. Review suggested categories and destinations.
+3. Apply sorting with confidence.
+4. Undo if anything needs to be restored.
 
-- `recursive: bool`
-- `max_depth: number`
-- `include_hidden: bool`
-- `exclude_patterns: string[]`
-- `enable_ai: bool`
-- `progress_log_every: number`
+## Built For Real-World Workflows
 
-Returns:
+- Works well for creators, students, professionals, and anyone managing large folders.
+- Handles recurring clutter and one-time cleanups.
+- Keeps your preference choices so the app becomes smarter for your setup.
 
-- `files` (classification preview / dry-run plan)
-- `metrics` (throughput, elapsed, classified counts)
-- `conflicts` (overlapping extension rules)
+## Updates
 
-## Prerequisites
+- Ordinex provides regular releases with installer updates.
+- Release notes are automatically generated from commit history so each release clearly shows what changed.
 
-- Node.js 20+
-- Rust stable toolchain (`rustup`)
-- Tauri v2 prerequisites for Windows
+## License
 
-## Install
+Licensed under the MIT License.
 
-```powershell
-npm install
-```
+You may use, copy, modify, merge, publish, distribute, sublicense, sell, and create derivative works, provided attribution is preserved through the included copyright and license notice.
 
-## Run in development
-
-```powershell
-npm.cmd run tauri dev
-```
-
-## Build frontend bundle
-
-```powershell
-npm.cmd run build
-```
-
-## Run backend tests
-
-```powershell
-cd src-tauri
-cargo test
-```
-
-## Package desktop app
-
-```powershell
-npm.cmd run tauri build
-```
-
-## Theme behavior
-
-- The app now defaults to `dark` theme on first launch.
-- Users can switch between dark/light themes from the top header theme toggle.
-- Theme preference is persisted locally under `ordinex-theme`.
-- Warning UI (including dry-run safety notices) uses semantic warning tokens for readability in both themes.
-
-## Automatic updater workflow
-
-- On startup, the app checks for updates from GitHub Releases:
-  - `https://github.com/STGYO/Ordinex/releases/latest/download/latest.json`
-- If an update is found, it is downloaded automatically in the background.
-- Once download completes, the UI prompts the user to install/restart.
-- Updater permissions are enabled through Tauri capabilities (`updater:default`).
-
-## Updater signing and release setup
-
-Tauri updater signatures are mandatory. Generate keys once, then configure CI secrets.
-
-Generate keys (run locally once):
-
-```powershell
-npm run tauri signer generate -- -w "$env:USERPROFILE\\.tauri\\ordinex.key"
-```
-
-Configure these GitHub repository secrets:
-
-- `TAURI_SIGNING_PRIVATE_KEY`: private key contents (or path content)
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: private key password (if set)
-- `TAURI_UPDATER_PUBLIC_KEY`: public key contents to embed at build time
-
-Release automation:
-
-- Workflow file: `.github/workflows/release-tauri.yml`
-- Trigger on tag pushes (`v*`) or manual dispatch.
-- Builds signed artifacts and uploads updater metadata (`latest.json`) to GitHub Releases.
-
-## AI classification setup
-
-AI configuration is now done inside the app:
-
-- Use the top header AI indicator button on any page.
-- Green indicator: selected provider validated successfully.
-- Red indicator: selected provider not validated or unavailable.
-- Configure:
-  - `Model Provider` (Gemini, OpenAI, Anthropic, Ollama, OpenRouter-Compatible)
-  - `API Key` (stored per provider in OS credential vault)
-  - `Model Name` (loaded live from provider API)
-  - `Base URL` (for Ollama and OpenRouter-Compatible endpoints)
-
-Sorting behavior:
-
-- AI sorting runs first when enabled.
-- Normal rules-based sorting is applied as fallback for files AI does not classify.
-- Remaining unmatched files still fall back to `Unknown` / `Needs Sorting`.
-
-## Notes
-
-- Action history is stored in the app data folder (`history.db`).
-- AI settings are stored in app data (`ai_settings.json`) and provider secrets in OS credential vault.
-- Rule configuration is stored in app data (`rules.json`).
-- App updates preserve app data directory contents (`history.db`, `ai_settings.json`, `rules.json`).
-- Undo updates existing transaction history entries rather than duplicating IDs.
-- Move operations handle cross-drive scenarios with copy+delete fallback.
-- Logs are stored in the app data folder (`filesorter.log`).
+Copyright for code authored by Shri Srimoy Trivedy remains with Shri Srimoy Trivedy.

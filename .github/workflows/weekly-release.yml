@@ -1,0 +1,176 @@
+name: weekly-release
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-release
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Bump patch version across manifests
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const packagePath = "package.json";
+          const tauriConfigPath = "src-tauri/tauri.conf.json";
+          const cargoTomlPath = "src-tauri/Cargo.toml";
+
+          const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+          const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, "utf8"));
+
+          const currentVersion = tauriConfig.version;
+          if (!/^\d+\.\d+\.\d+$/.test(currentVersion)) {
+            throw new Error(`Unsupported semver format: ${currentVersion}`);
+          }
+
+          const [major, minor, patch] = currentVersion.split(".").map(Number);
+          const nextVersion = `${major}.${minor}.${patch + 1}`;
+
+          packageJson.version = nextVersion;
+          tauriConfig.version = nextVersion;
+
+          fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+          fs.writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
+
+          const cargoToml = fs.readFileSync(cargoTomlPath, "utf8");
+          const updatedCargoToml = cargoToml.replace(
+            /(^\[package\][\s\S]*?^version\s*=\s*")[^"]+("\s*$)/m,
+            `$1${nextVersion}$2`
+          );
+
+          if (updatedCargoToml === cargoToml) {
+            throw new Error("Failed to update package version in src-tauri/Cargo.toml");
+          }
+
+          fs.writeFileSync(cargoTomlPath, updatedCargoToml);
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${nextVersion}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=v${nextVersion}\n`);
+          NODE
+
+      - name: Validate version consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_PACKAGE=$(jq -r '.version' package.json)
+          VERSION_TAURI=$(jq -r '.version' src-tauri/tauri.conf.json)
+          VERSION_CARGO=$(grep '^version\s*=\s*"' src-tauri/Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+
+          if [[ "$VERSION_PACKAGE" != "$VERSION_TAURI" || "$VERSION_TAURI" != "$VERSION_CARGO" ]]; then
+            echo "Version mismatch detected"
+            echo "package.json: $VERSION_PACKAGE"
+            echo "src-tauri/tauri.conf.json: $VERSION_TAURI"
+            echo "src-tauri/Cargo.toml: $VERSION_CARGO"
+            exit 1
+          fi
+
+      - name: Commit version bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          if git diff --cached --quiet; then
+            echo "No version changes to commit"
+            exit 1
+          fi
+          git commit -m "chore(release): weekly v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:main
+
+      - name: Ensure tag does not exist remotely
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "${{ steps.bump.outputs.tag }}" > /dev/null 2>&1; then
+            echo "Tag ${{ steps.bump.outputs.tag }} already exists on origin"
+            exit 1
+          fi
+
+      - name: Create and push release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin "${{ steps.bump.outputs.tag }}"
+
+  publish-release:
+    needs: prepare-release
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      max-parallel: 1
+      matrix:
+        platform: [windows-latest, macos-latest, ubuntu-22.04]
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.platform, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish signed release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        with:
+          tagName: ${{ needs.prepare-release.outputs.tag }}
+          generateReleaseNotes: true
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
