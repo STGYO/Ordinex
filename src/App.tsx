@@ -1,5 +1,5 @@
-import { Fragment, lazy, Suspense, useEffect, useState } from "react";
-import { Folder, Play, History, Settings, FileSearch, ShieldAlert, FileIcon, FolderIcon, ArrowUp, ArrowDown, Eye, Plus, X } from "lucide-react";
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Folder, Play, History, Settings, FileSearch, ShieldAlert, FileIcon, FolderIcon, ArrowUp, ArrowDown, Eye, Plus, X, Sun, Moon, Download, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -19,6 +19,7 @@ import {
 // Tauri APIs
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 
 const AnalyticsCharts = lazy(() =>
   import("@/components/analytics-charts").then((module) => ({ default: module.AnalyticsCharts }))
@@ -131,6 +132,26 @@ type ScanResponse = {
   metrics: ScanMetrics;
 };
 
+type ThemeMode = "dark" | "light";
+
+type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "downloading"
+  | "ready-to-install"
+  | "installing"
+  | "installed"
+  | "error";
+
+type UpdateStatus = {
+  phase: UpdatePhase;
+  message: string;
+  version?: string;
+  downloadedBytes?: number;
+  totalBytes?: number;
+};
+
 const PROVIDER_OPTIONS: Array<{ value: AIProvider; label: string }> = [
   { value: "gemini", label: "Gemini" },
   { value: "openai", label: "OpenAI" },
@@ -146,6 +167,8 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<AIProvider, string> = {
   ollama: "llama3.1",
   openrouter: "openai/gpt-4o-mini",
 };
+
+const THEME_STORAGE_KEY = "ordinex-theme";
 
 const providerNeedsBaseUrl = (provider: AIProvider) => provider === "ollama" || provider === "openrouter";
 
@@ -191,10 +214,153 @@ export default function App() {
   const [aiModels, setAIModels] = useState<string[]>([]);
   const [aiAvailable, setAIAvailable] = useState(false);
   const [aiStatusMessage, setAIStatusMessage] = useState("AI provider is not validated.");
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
+    document.documentElement.classList.contains("dark") ? "dark" : "light"
+  );
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
+    phase: "idle",
+    message: "Update check has not started.",
+  });
+  const pendingUpdateRef = useRef<Update | null>(null);
+
+  const applyThemeMode = (mode: ThemeMode) => {
+    document.documentElement.classList.toggle("dark", mode === "dark");
+    localStorage.setItem(THEME_STORAGE_KEY, mode);
+    setThemeMode(mode);
+  };
+
+  const toggleThemeMode = () => {
+    applyThemeMode(themeMode === "dark" ? "light" : "dark");
+  };
+
+  const autoCheckAndDownloadUpdate = async () => {
+    if (
+      updateStatus.phase === "checking" ||
+      updateStatus.phase === "downloading" ||
+      updateStatus.phase === "installing"
+    ) {
+      return;
+    }
+
+    setUpdateStatus({
+      phase: "checking",
+      message: "Checking for updates...",
+    });
+
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus({
+          phase: "up-to-date",
+          message: "You are running the latest version.",
+        });
+        return;
+      }
+
+      if (pendingUpdateRef.current) {
+        await pendingUpdateRef.current.close().catch(() => undefined);
+      }
+      pendingUpdateRef.current = update;
+
+      let downloadedBytes = 0;
+      let totalBytes = 0;
+
+      setUpdateStatus({
+        phase: "downloading",
+        message: `Update ${update.version} found. Downloading in background...`,
+        version: update.version,
+      });
+
+      await update.download((event: DownloadEvent) => {
+        if (event.event === "Started") {
+          totalBytes = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          setUpdateStatus((prev) => ({
+            ...prev,
+            phase: "downloading",
+            downloadedBytes,
+            totalBytes,
+            message:
+              totalBytes > 0
+                ? `Downloading update: ${Math.round((downloadedBytes / totalBytes) * 100)}%`
+                : "Downloading update...",
+          }));
+        } else if (event.event === "Finished") {
+          setUpdateStatus((prev) => ({
+            ...prev,
+            phase: "ready-to-install",
+            message: "Update downloaded. Install when ready.",
+            downloadedBytes,
+            totalBytes,
+          }));
+        }
+      });
+
+      setUpdateStatus((prev) => ({
+        ...prev,
+        phase: "ready-to-install",
+        message: "Update downloaded. Install when ready.",
+        downloadedBytes,
+        totalBytes,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateStatus({
+        phase: "error",
+        message: `Updater unavailable: ${message}`,
+      });
+    }
+  };
+
+  const installDownloadedUpdate = async () => {
+    if (!pendingUpdateRef.current) {
+      setUpdateStatus((prev) => ({
+        ...prev,
+        phase: "error",
+        message: "No downloaded update is ready to install.",
+      }));
+      return;
+    }
+
+    try {
+      setUpdateStatus((prev) => ({
+        ...prev,
+        phase: "installing",
+        message: "Installing update...",
+      }));
+
+      await pendingUpdateRef.current.install();
+      await pendingUpdateRef.current.close().catch(() => undefined);
+      pendingUpdateRef.current = null;
+
+      setUpdateStatus((prev) => ({
+        ...prev,
+        phase: "installed",
+        message: "Update installed. Restart the app to finish applying changes.",
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateStatus((prev) => ({
+        ...prev,
+        phase: "error",
+        message: `Update install failed: ${message}`,
+      }));
+    }
+  };
 
   useEffect(() => {
     loadRuleConfig();
     loadAISettings();
+
+    void autoCheckAndDownloadUpdate();
+
+    return () => {
+      if (pendingUpdateRef.current) {
+        void pendingUpdateRef.current.close().catch(() => undefined);
+        pendingUpdateRef.current = null;
+      }
+    };
   }, []);
 
   const handleSelectFolder = async () => {
@@ -621,6 +787,14 @@ export default function App() {
   const aiClassifiedCount = files.filter(f => !f.is_dir && f.category && f.category !== "Unknown").length;
   const safeToMoveCount = files.filter(f => !f.is_dir && f.suggested_folder).length;
   const totalFiles = files.filter(f => !f.is_dir).length;
+  const updateProgressPercent =
+    updateStatus.totalBytes && updateStatus.totalBytes > 0
+      ? Math.min(100, Math.round(((updateStatus.downloadedBytes ?? 0) / updateStatus.totalBytes) * 100))
+      : null;
+  const isUpdateBusy =
+    updateStatus.phase === "checking" ||
+    updateStatus.phase === "downloading" ||
+    updateStatus.phase === "installing";
 
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
@@ -676,6 +850,40 @@ export default function App() {
             {currentView === "dashboard" ? "System Scan" : currentView === "history" ? "Action History" : "Rules & Config"}
           </h2>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={toggleThemeMode}
+              title={themeMode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              aria-label={themeMode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            >
+              {themeMode === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </Button>
+            {updateStatus.phase === "ready-to-install" ? (
+              <Button size="sm" className="gap-2" onClick={installDownloadedUpdate}>
+                <Download size={16} />
+                Install Update
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => void autoCheckAndDownloadUpdate()}
+                disabled={isUpdateBusy}
+              >
+                <RefreshCw size={16} className={isUpdateBusy ? "animate-spin" : ""} />
+                {updateStatus.phase === "checking"
+                  ? "Checking..."
+                  : updateStatus.phase === "downloading"
+                    ? updateProgressPercent !== null
+                      ? `Downloading ${updateProgressPercent}%`
+                      : "Downloading..."
+                    : updateStatus.phase === "installing"
+                      ? "Installing..."
+                      : "Check Updates"}
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -854,6 +1062,26 @@ export default function App() {
             {statusMessage && !errorMessage && (
               <div className="rounded-md border border-primary/30 bg-primary/10 p-3 text-sm text-primary">
                 {statusMessage}
+              </div>
+            )}
+            {updateStatus.phase !== "idle" && (
+              <div
+                className={`rounded-md border p-3 text-sm ${
+                  updateStatus.phase === "error"
+                    ? "border-destructive/40 bg-destructive/10 text-destructive"
+                    : updateStatus.phase === "ready-to-install" || updateStatus.phase === "installed"
+                      ? "border-warning-border bg-warning-muted text-warning-muted-foreground"
+                      : "border-border bg-muted/30 text-muted-foreground"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span>{updateStatus.message}</span>
+                  {updateStatus.version && (
+                    <span className="text-xs font-medium rounded-full border border-border px-2 py-0.5">
+                      v{updateStatus.version}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
             {currentView === "history" ? (
@@ -1280,11 +1508,11 @@ export default function App() {
                 )}
 
                 {/* Safety Notice */}
-                <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-4 flex gap-4 items-start">
-                  <ShieldAlert className="text-orange-500 mt-1 shrink-0" />
+                <div className="bg-warning-muted border border-warning-border rounded-lg p-4 flex gap-4 items-start">
+                  <ShieldAlert className="text-warning mt-1 shrink-0" />
                   <div>
-                    <h4 className="font-medium text-orange-200">Dry-Run Enabled by Default</h4>
-                    <p className="text-sm text-orange-200/80 mt-1">
+                    <h4 className="font-medium text-warning">Dry-Run Enabled by Default</h4>
+                    <p className="text-sm text-warning-muted-foreground mt-1">
                       All scans simulate operations first. No files are moved until you explicitly review and approve the Action Manifest.
                     </p>
                   </div>

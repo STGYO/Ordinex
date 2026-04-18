@@ -443,9 +443,21 @@ async fn preview_rule_matches(
 }
 
 fn main() {
+    let mut updater_plugin_builder = tauri_plugin_updater::Builder::new();
+    if let Some(pubkey) = option_env!("TAURI_UPDATER_PUBLIC_KEY") {
+        if !pubkey.trim().is_empty() {
+            updater_plugin_builder = updater_plugin_builder.pubkey(pubkey);
+        }
+    } else {
+        warn!(
+            "TAURI_UPDATER_PUBLIC_KEY not set at build time; updater checks will fail until a public key is configured"
+        );
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(updater_plugin_builder.build())
         .setup(|app| {
             if let Err(e) = db::init_db(app.handle()) {
                 eprintln!("Failed to initialize DB: {}", e);

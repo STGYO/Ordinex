@@ -2,9 +2,9 @@
 
 This file is a generated working context for coding sessions. It is meant to avoid re-discovering project structure in every prompt.
 
-Generated: 2026-04-18 18:10:00 +05:30
+Generated: 2026-04-18 12:58:00 +05:30
 Scope: all files under repository root, excluding generated artifacts in src-tauri/target, node_modules, dist, and .git
-Total scoped files: 108
+Total scoped files: 109
 
 ## Commands
 
@@ -19,6 +19,7 @@ Total scoped files: 108
 - react-dom: ^19.1.0
 - @tauri-apps/api: ^2.10.1
 - @tauri-apps/plugin-dialog: ^2.6.0
+- @tauri-apps/plugin-updater: ^2
 - recharts: ^3.7.0
 - tailwindcss-animate: ^1.0.7
 - typescript: ~5.8.3
@@ -32,6 +33,7 @@ Total scoped files: 108
 - tauri
 - tauri-plugin-opener
 - tauri-plugin-dialog
+- tauri-plugin-updater
 - tokio
 - reqwest
 - rayon
@@ -51,6 +53,9 @@ Total scoped files: 108
 - Build frontend bundle
 - Run backend tests
 - Package desktop app
+- Theme behavior
+- Automatic updater workflow
+- Updater signing and release setup
 - AI classification setup
 - Notes
 
@@ -59,10 +64,14 @@ Total scoped files: 108
 - Desktop app built with Tauri 2: React TypeScript frontend + Rust backend commands.
 - Frontend invokes backend commands for scan, rule config, execution, and rollback.
 - Frontend also invokes AI settings commands for provider config, model listing, and provider validation.
+- Frontend also runs updater checks on startup and auto-downloads updates when available.
 - Rule engine and file move transaction logic live in src-tauri/src/rules.rs and src-tauri/src/engine.rs.
 - AI classification supports multiple providers (Gemini, OpenAI, Anthropic, Ollama, OpenRouter-compatible) with provider-specific credentials stored in OS credential vault.
 - Scan flow is AI-first with per-file rules fallback, then Unknown fallback for unmatched files.
 - History persists to SQLite via src-tauri/src/db.rs; logs via src-tauri/src/observability.rs.
+- Theme system is tokenized with explicit light/dark palettes and persisted user selection.
+- Updater uses GitHub Releases `latest.json` endpoint with signed artifacts and Tauri updater capabilities.
+- App data persistence remains under app_data_dir; history and AI/rule configs are preserved across app updates.
 
 ## File Inventory
 
@@ -92,6 +101,13 @@ Total scoped files: 108
 - type: text
 - lines: 21
 - first_non_empty: ---
+
+### .github/workflows/release-tauri.yml
+
+- type: text
+- lines: 42
+- first_non_empty: name: release-tauri
+- key_items: publish-tauri, tauri-apps/tauri-action@v0, tagName: app-v__VERSION__
 
 ### .gitignore
 
@@ -176,7 +192,7 @@ Total scoped files: 108
 ### README.md
 
 - type: text
-- lines: 96
+- lines: 132
 - first_non_empty: # FileSorter AI (Tauri + React + Rust)
 - key_items: # FileSorter AI (Tauri + React + Rust), # New Architecture Features, # Rule Configuration, # Advanced Scan Options, # Prerequisites, # Install, # Run in development, # Build frontend bundle
 
@@ -189,9 +205,9 @@ Total scoped files: 108
 ### src/App.tsx
 
 - type: text
-- lines: 947
-- first_non_empty: import { Fragment, lazy, Suspense, useEffect, useState } from "react";
-- key_items: AnalyticsCharts
+- lines: 1100
+- first_non_empty: import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
+- key_items: AnalyticsCharts, ThemeMode, UpdateStatus, autoCheckAndDownloadUpdate
 
 ### src/assets/react.svg
 
